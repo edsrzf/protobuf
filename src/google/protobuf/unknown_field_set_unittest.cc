@@ -679,6 +679,96 @@ TEST_F(UnknownFieldSetTest, DeleteByNumber) {
 }
 #undef MAKE_VECTOR
 
+// TODO(b/202705792): Open source when possible.
+TEST_F(UnknownFieldSetTest, SerializeToString) {
+  UnknownFieldSet field_set;
+  field_set.AddVarint(3, 3);
+  field_set.AddVarint(4, 4);
+  field_set.AddVarint(1, -1);
+  field_set.AddVarint(2, -2);
+  field_set.AddLengthDelimited(44, "str");
+  field_set.AddLengthDelimited(44, "byv");
+  field_set.AddFixed32(7, 7);
+  field_set.AddFixed64(8, 8);
+
+  UnknownFieldSet* group_field_set = field_set.AddGroup(46);
+  group_field_set->AddVarint(47, 1024);
+  group_field_set = field_set.AddGroup(46);
+  group_field_set->AddVarint(47, 2048);
+
+  unittest::TestAllTypes message;
+  std::string serialized_message;
+  ASSERT_TRUE(field_set.SerializeToString(&serialized_message));
+  ASSERT_TRUE(message.ParseFromString(serialized_message));
+  EXPECT_THAT(message, testing::EqualsProto(R"pb(
+                optional_int32: -1
+                optional_int64: -2
+                optional_uint32: 3
+                optional_uint64: 4
+                optional_fixed32: 7
+                optional_fixed64: 8
+                repeated_string: "str"
+                repeated_string: "byv"
+                RepeatedGroup { a: 1024 }
+                RepeatedGroup { a: 2048 }
+              )pb"));
+}
+
+TEST_F(UnknownFieldSetTest, SerializeToCodedStream_TestPackedTypes) {
+  UnknownFieldSet field_set;
+  field_set.AddVarint(90, -1);
+  field_set.AddVarint(90, -2);
+  field_set.AddVarint(90, -3);
+  field_set.AddVarint(90, -4);
+  field_set.AddVarint(93, 5);
+  field_set.AddVarint(93, 6);
+  field_set.AddVarint(93, 7);
+
+  unittest::TestPackedTypes message;
+  std::string serialized_message;
+  {
+    io::StringOutputStream string_output(&serialized_message);
+    io::CodedOutputStream coded_output(&string_output);
+    ASSERT_TRUE(field_set.SerializeToCodedStream(&coded_output));
+  }
+  ASSERT_TRUE(message.ParseFromString(serialized_message));
+  EXPECT_THAT(message, testing::EqualsProto(R"pb(
+                packed_int32: -1
+                packed_int32: -2
+                packed_int32: -3
+                packed_int32: -4
+                packed_uint64: 5
+                packed_uint64: 6
+                packed_uint64: 7
+              )pb"));
+}
+
+TEST_F(UnknownFieldSetTest, SerializeToCord_TestPackedTypes) {
+  UnknownFieldSet field_set;
+  field_set.AddVarint(90, -1);
+  field_set.AddVarint(90, -2);
+  field_set.AddVarint(90, -3);
+  field_set.AddVarint(90, -4);
+  field_set.AddVarint(93, 5);
+  field_set.AddVarint(93, 6);
+  field_set.AddVarint(93, 7);
+
+  absl::Cord cord;
+  ASSERT_TRUE(field_set.SerializeToCord(&cord));
+
+  unittest::TestPackedTypes message;
+  ASSERT_TRUE(message.ParseFromCord(cord));
+  EXPECT_THAT(message, testing::EqualsProto(R"pb(
+                packed_int32: -1
+                packed_int32: -2
+                packed_int32: -3
+                packed_int32: -4
+                packed_uint64: 5
+                packed_uint64: 6
+                packed_uint64: 7
+              )pb"));
+}
+
 }  // namespace
 
 }  // namespace protobuf
