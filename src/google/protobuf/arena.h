@@ -270,7 +270,8 @@ class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8) Arena final {
   // is obtained from the arena).
   template <typename T, typename... Args>
   PROTOBUF_NDEBUG_INLINE static T* Create(Arena* arena, Args&&... args) {
-    if (arena == nullptr) {
+    // For speed, use Arenas!
+    if (PROTOBUF_PREDICT_FALSE(arena == nullptr)) {
       return new T(std::forward<Args>(args)...);
     }
     auto destructor =
@@ -316,9 +317,13 @@ class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8) Arena final {
                   "CreateArray requires a trivially constructible type");
     static_assert(std::is_trivially_destructible<T>::value,
                   "CreateArray requires a trivially destructible type");
-    GOOGLE_CHECK_LE(num_elements, std::numeric_limits<size_t>::max() / sizeof(T))
+    // Only perform this check in debug mode. If a request to allocate these
+    // many objects is indeed made in an optimised binary, let the allocator
+    // crash.
+    GOOGLE_DCHECK_LE(num_elements, std::numeric_limits<size_t>::max() / sizeof(T))
         << "Requested size is too large to fit into size_t.";
-    if (arena == nullptr) {
+    // Use Arenas if performance is a concern!
+    if (PROTOBUF_PREDICT_FALSE(arena == nullptr)) {
       return static_cast<T*>(::operator new[](num_elements * sizeof(T)));
     } else {
       return arena->CreateInternalRawArray<T>(num_elements);
@@ -616,7 +621,12 @@ class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8) Arena final {
   // type has a trivial constructor.
   template <typename T>
   PROTOBUF_NDEBUG_INLINE T* CreateInternalRawArray(size_t num_elements) {
-    GOOGLE_CHECK_LE(num_elements, std::numeric_limits<size_t>::max() / sizeof(T))
+    // There are two reasons to only do this in debug builds:
+    // 1. This check is already done in CreateArray.
+    // 2. In an optimised build, NOBODY should be actually creating arrays
+    // this large, at least not in protos. Let the allocator crash instead
+    // of this line.
+    GOOGLE_DCHECK_LE(num_elements, std::numeric_limits<size_t>::max() / sizeof(T))
         << "Requested size is too large to fit into size_t.";
     // We count on compiler to realize that if sizeof(T) is a multiple of
     // 8 AlignUpTo can be elided.
