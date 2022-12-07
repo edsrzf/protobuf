@@ -83,7 +83,7 @@ class MockGeneratorContext : public GeneratorContext {
     std::string expected_contents = *it->second;
 
     std::string actual_contents;
-    GOOGLE_CHECK_OK(
+    GOOGLE_ABSL_CHECK_OK(
         File::GetContentsAsText(TestSourceDir() + "/" + physical_filename,
                           &actual_contents, true))
         << "Unable to get " << physical_filename;
