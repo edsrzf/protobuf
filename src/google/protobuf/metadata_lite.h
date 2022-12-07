@@ -75,7 +75,7 @@ class PROTOBUF_EXPORT InternalMetadata {
     ptr_ = is_message_owned
                ? reinterpret_cast<intptr_t>(arena) | kMessageOwnedArenaTagMask
                : reinterpret_cast<intptr_t>(arena);
-    GOOGLE_DCHECK(!is_message_owned || arena != nullptr);
+    GOOGLE_ABSL_DCHECK(!is_message_owned || arena != nullptr);
   }
 
   // To keep the ABI identical between debug and non-debug builds,

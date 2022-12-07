@@ -98,11 +98,11 @@ struct ArenaBlock {
 
   ArenaBlock(ArenaBlock* next, size_t size)
       : next(next), cleanup_nodes(nullptr), size(size) {
-    GOOGLE_DCHECK_GT(size, sizeof(ArenaBlock));
+    GOOGLE_ABSL_DCHECK_GT(size, sizeof(ArenaBlock));
   }
 
   char* Pointer(size_t n) {
-    GOOGLE_DCHECK_LE(n, size);
+    GOOGLE_ABSL_DCHECK_LE(n, size);
     return reinterpret_cast<char*>(this) + n;
   }
   char* Limit() { return Pointer(size & static_cast<size_t>(-8)); }
@@ -213,8 +213,8 @@ class PROTOBUF_EXPORT SerialArena {
   // from it.
   template <AllocationClient alloc_client = AllocationClient::kDefault>
   void* AllocateAligned(size_t n) {
-    GOOGLE_DCHECK_EQ(internal::AlignUpTo8(n), n);  // Must be already aligned.
-    GOOGLE_DCHECK_GE(limit_, ptr());
+    GOOGLE_ABSL_DCHECK_EQ(internal::AlignUpTo8(n), n);  // Must be already aligned.
+    GOOGLE_ABSL_DCHECK_GE(limit_, ptr());
 
     if (alloc_client == AllocationClient::kArray) {
       if (void* res = TryAllocateFromCachedBlock(n)) {
@@ -289,8 +289,8 @@ class PROTOBUF_EXPORT SerialArena {
  public:
   // Allocate space if the current region provides enough space.
   bool MaybeAllocateAligned(size_t n, void** out) {
-    GOOGLE_DCHECK_EQ(internal::AlignUpTo8(n), n);  // Must be already aligned.
-    GOOGLE_DCHECK_GE(limit_, ptr());
+    GOOGLE_ABSL_DCHECK_EQ(internal::AlignUpTo8(n), n);  // Must be already aligned.
+    GOOGLE_ABSL_DCHECK_GE(limit_, ptr());
     if (PROTOBUF_PREDICT_FALSE(!HasSpace(n))) return false;
     *out = AllocateFromExisting(n);
     return true;
@@ -301,7 +301,7 @@ class PROTOBUF_EXPORT SerialArena {
   // and the memory returned is uninitialized.
   template <typename T>
   PROTOBUF_ALWAYS_INLINE void* MaybeAllocateWithCleanup() {
-    GOOGLE_DCHECK_GE(limit_, ptr());
+    GOOGLE_ABSL_DCHECK_GE(limit_, ptr());
     static_assert(!std::is_trivially_destructible<T>::value,
                   "This function is only for non-trivial types.");
 
@@ -343,7 +343,7 @@ class PROTOBUF_EXPORT SerialArena {
     PROTOBUF_UNPOISON_MEMORY_REGION(ptr(), n);
     void* ret = internal::AlignTo(ptr(), align);
     set_ptr(ptr() + n);
-    GOOGLE_DCHECK_GE(limit_, ptr());
+    GOOGLE_ABSL_DCHECK_GE(limit_, ptr());
     AddCleanupFromExisting(ret, destructor);
     return ret;
   }
@@ -355,7 +355,7 @@ class PROTOBUF_EXPORT SerialArena {
 
     PROTOBUF_UNPOISON_MEMORY_REGION(limit_ - n, n);
     limit_ -= n;
-    GOOGLE_DCHECK_GE(limit_, ptr());
+    GOOGLE_ABSL_DCHECK_GE(limit_, ptr());
     cleanup::CreateNode(tag, limit_, elem, destructor);
   }
 
