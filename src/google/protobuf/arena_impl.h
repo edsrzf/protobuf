@@ -45,6 +45,7 @@
 #include "absl/base/attributes.h"
 #include "absl/numeric/bits.h"
 #include "absl/synchronization/mutex.h"
+#include "google/protobuf/arena_align.h"
 #include "google/protobuf/arena_allocation_policy.h"
 #include "google/protobuf/arena_cleanup.h"
 #include "google/protobuf/arena_config.h"
@@ -189,6 +190,12 @@ class PROTOBUF_EXPORT SerialArena {
     return AllocateFromExisting(n);
   }
 
+  template <typename TagOrCleanup, typename Align>
+  void* AllocateWithCleanup(size_t size, Align align, TagOrCleanup cleanup);
+
+  template <typename TagOrCleanup, typename Align>
+  void* TryAllocateWithCleanup(size_t size, Align align, TagOrCleanup cleanup);
+
  private:
   void* AllocateFromExisting(size_t n) {
     PROTOBUF_UNPOISON_MEMORY_REGION(ptr(), n);
@@ -261,64 +268,10 @@ class PROTOBUF_EXPORT SerialArena {
   // object and register for destruction. The object has not been constructed
   // and the memory returned is uninitialized.
   template <typename T>
-  PROTOBUF_ALWAYS_INLINE void* MaybeAllocateWithCleanup() {
-    GOOGLE_DCHECK_GE(limit_, ptr());
-    static_assert(!std::is_trivially_destructible<T>::value,
-                  "This function is only for non-trivial types.");
+  void* MaybeAllocateWithCleanup();
 
-    constexpr int aligned_size = AlignUpTo8(sizeof(T));
-    constexpr auto destructor = cleanup::arena_destruct_object<T>;
-    size_t required = aligned_size + cleanup::Size(destructor);
-    if (PROTOBUF_PREDICT_FALSE(!HasSpace(required))) {
-      return nullptr;
-    }
-    void* ptr = AllocateFromExistingWithCleanupFallback(aligned_size,
-                                                        alignof(T), destructor);
-    PROTOBUF_ASSUME(ptr != nullptr);
-    return ptr;
-  }
-
-  PROTOBUF_ALWAYS_INLINE
-  void* AllocateAlignedWithCleanup(size_t n, size_t align,
-                                   void (*destructor)(void*)) {
-    size_t required = AlignUpTo(n, align) + cleanup::Size(destructor);
-    if (PROTOBUF_PREDICT_FALSE(!HasSpace(required))) {
-      return AllocateAlignedWithCleanupFallback(n, align, destructor);
-    }
-    return AllocateFromExistingWithCleanupFallback(n, align, destructor);
-  }
-
-  PROTOBUF_ALWAYS_INLINE
-  void AddCleanup(void* elem, void (*destructor)(void*)) {
-    size_t required = cleanup::Size(destructor);
-    if (PROTOBUF_PREDICT_FALSE(!HasSpace(required))) {
-      return AddCleanupFallback(elem, destructor);
-    }
-    AddCleanupFromExisting(elem, destructor);
-  }
-
- private:
-  void* AllocateFromExistingWithCleanupFallback(size_t n, size_t align,
-                                                void (*destructor)(void*)) {
-    n = AlignUpTo(n, align);
-    PROTOBUF_UNPOISON_MEMORY_REGION(ptr(), n);
-    void* ret = internal::AlignTo(ptr(), align);
-    set_ptr(ptr() + n);
-    GOOGLE_DCHECK_GE(limit_, ptr());
-    AddCleanupFromExisting(ret, destructor);
-    return ret;
-  }
-
-  PROTOBUF_ALWAYS_INLINE
-  void AddCleanupFromExisting(void* elem, void (*destructor)(void*)) {
-    cleanup::Tag tag = cleanup::Type(destructor);
-    size_t n = cleanup::Size(tag);
-
-    PROTOBUF_UNPOISON_MEMORY_REGION(limit_ - n, n);
-    limit_ -= n;
-    GOOGLE_DCHECK_GE(limit_, ptr());
-    cleanup::CreateNode(tag, limit_, elem, destructor);
-  }
+  template <typename TagOrCleanup>
+  void AddCleanup(void* elem, TagOrCleanup cleanup);
 
  private:
   friend class ThreadSafeArena;
@@ -379,15 +332,103 @@ class PROTOBUF_EXPORT SerialArena {
   inline SerialArena(FirstSerialArena, ArenaBlock* b, ThreadSafeArena& parent);
 
   void* AllocateAlignedFallback(size_t n);
-  void* AllocateAlignedWithCleanupFallback(size_t n, size_t align,
-                                           void (*destructor)(void*));
-  void AddCleanupFallback(void* elem, void (*destructor)(void*));
+
+  template <typename TagOrCleanup>
+  void BlindlyAddCleanup(void* elem, TagOrCleanup cleanup);
+
+  template <typename TagOrCleanup>
+  void AddCleanupFallback(void* elem, TagOrCleanup cleanup);
+
+  template <typename TagOrCleanup, typename Align>
+  void* BlindlyAllocateWithCleanup(size_t size, Align align,
+                                   TagOrCleanup cleanup);
+
+  template <typename TagOrCleanup, typename Align>
+  void* AllocateWithCleanupFallback(size_t size, Align align,
+                                    TagOrCleanup cleanup);
+
   inline void AllocateNewBlock(size_t n);
   inline void Init(ArenaBlock* b, size_t offset);
 
  public:
   static constexpr size_t kBlockHeaderSize = AlignUpTo8(sizeof(ArenaBlock));
 };
+
+template <typename TagOrCleanup>
+inline PROTOBUF_ALWAYS_INLINE void SerialArena::AddCleanup(
+    void* elem, TagOrCleanup cleanup) {
+  const size_t n = cleanup::CleanupSize(cleanup);
+  if (PROTOBUF_PREDICT_FALSE(!HasSpace(n))) {
+    return AddCleanupFallback(elem, cleanup);
+  }
+  BlindlyAddCleanup(elem, cleanup);
+}
+
+template <typename TagOrCleanup>
+inline PROTOBUF_ALWAYS_INLINE void SerialArena::BlindlyAddCleanup(
+    void* elem, TagOrCleanup cleanup) {
+  const size_t n = cleanup::CleanupSize(cleanup);
+  GOOGLE_DCHECK(HasSpace(n));
+  limit_ -= n;
+  PROTOBUF_UNPOISON_MEMORY_REGION(limit_, n);
+  cleanup::CreateNode(limit_, elem, cleanup);
+}
+
+template <typename TagOrCleanup, typename Align>
+inline PROTOBUF_ALWAYS_INLINE void* SerialArena::BlindlyAllocateWithCleanup(
+    size_t size, Align align, TagOrCleanup cleanup) {
+  GOOGLE_DCHECK(align.IsAligned(size));
+  char* ptr = align.CeilDefaultAligned(this->ptr());
+  PROTOBUF_UNPOISON_MEMORY_REGION(ptr, size);
+  BlindlyAddCleanup(ptr, cleanup);
+  GOOGLE_DCHECK_LE(ptr + size, limit_);
+  set_ptr(ptr + size);
+  return ptr;
+}
+
+template <typename TagOrCleanup, typename Align>
+inline PROTOBUF_NDEBUG_INLINE void* SerialArena::AllocateWithCleanup(
+    size_t size, Align align, TagOrCleanup cleanup) {
+  const size_t n = align.Padded(size) + cleanup::CleanupSize(cleanup);
+  if (PROTOBUF_PREDICT_TRUE(HasSpace(n))) {
+    return BlindlyAllocateWithCleanup(size, align, cleanup);
+  }
+  return AllocateWithCleanupFallback(size, align, cleanup);
+}
+
+template <typename TagOrCleanup, typename Align>
+inline PROTOBUF_NDEBUG_INLINE void* SerialArena::TryAllocateWithCleanup(
+    size_t size, Align align, TagOrCleanup cleanup) {
+  const size_t n = align.Padded(size) + cleanup::CleanupSize(cleanup);
+  if (PROTOBUF_PREDICT_FALSE(!HasSpace(n))) return nullptr;
+  void* ptr = BlindlyAllocateWithCleanup(size, align, cleanup);
+  PROTOBUF_ASSUME(ptr != nullptr);
+  return ptr;
+}
+
+template <typename T>
+inline PROTOBUF_ALWAYS_INLINE void* SerialArena::MaybeAllocateWithCleanup() {
+  static_assert(!std::is_trivially_destructible<T>::value, "");
+  constexpr auto align = internal::ArenaAlignOf<T>();
+  return TryAllocateWithCleanup(align.Ceil(sizeof(T)), align,
+                                cleanup::arena_destruct_object<T>);
+}
+
+template <>
+inline PROTOBUF_ALWAYS_INLINE void*
+SerialArena::MaybeAllocateWithCleanup<std::string>() {
+  constexpr auto align = internal::ArenaAlignOf<std::string>();
+  return TryAllocateWithCleanup(align.Ceil(sizeof(std::string)), align,
+                                cleanup::Tag::kString);
+}
+
+template <>
+inline PROTOBUF_ALWAYS_INLINE void*
+SerialArena::MaybeAllocateWithCleanup<absl::Cord>() {
+  constexpr auto align = internal::ArenaAlignOf<absl::Cord>();
+  return TryAllocateWithCleanup(align.Ceil(sizeof(absl::Cord)), align,
+                                cleanup::Tag::kCord);
+}
 
 // Tag type used to invoke the constructor of message-owned arena.
 // Only message-owned arenas use this constructor for creation.
@@ -462,11 +503,18 @@ class PROTOBUF_EXPORT ThreadSafeArena {
     return false;
   }
 
-  void* AllocateAlignedWithCleanup(size_t n, size_t align,
-                                   void (*destructor)(void*));
-
   // Add object pointer and cleanup function pointer to the list.
-  void AddCleanup(void* elem, void (*cleanup)(void*));
+  template <typename TagOrCleanup>
+  void AddCleanup(void* elem, TagOrCleanup cleanup);
+
+  template <typename TagOrCleanup, typename Align>
+  void* AllocateWithCleanup(size_t size, Align align, TagOrCleanup cleanup) {
+    SerialArena* arena;
+    if (PROTOBUF_PREDICT_TRUE(GetSerialArenaFast(&arena))) {
+      return arena->AllocateWithCleanup(size, align, cleanup);
+    }
+    return AllocateWithCleanupFallback(size, align, cleanup);
+  }
 
   // Checks whether this arena is message-owned.
   PROTOBUF_ALWAYS_INLINE bool IsMessageOwned() const {
@@ -525,8 +573,6 @@ class PROTOBUF_EXPORT ThreadSafeArena {
 
   const AllocationPolicy* AllocPolicy() const { return alloc_policy_.get(); }
   void InitializeWithPolicy(const AllocationPolicy& policy);
-  void* AllocateAlignedWithCleanupFallback(size_t n, size_t align,
-                                           void (*destructor)(void*));
 
   void Init();
 
@@ -558,6 +604,10 @@ class PROTOBUF_EXPORT ThreadSafeArena {
 
   template <AllocationClient alloc_client = AllocationClient::kDefault>
   void* AllocateAlignedFallback(size_t n);
+
+  template <typename TagOrCleanup, typename Align>
+  void* AllocateWithCleanupFallback(size_t size, Align align,
+                                    TagOrCleanup cleanup);
 
   // Executes callback function over SerialArenaChunk. Passes const
   // SerialArenaChunk*.
@@ -645,6 +695,15 @@ class PROTOBUF_EXPORT ThreadSafeArena {
   static_assert(kSerialArenaSize % 8 == 0,
                 "kSerialArenaSize must be a multiple of 8.");
 };
+
+template <typename TagOrCleanup>
+inline void ThreadSafeArena::AddCleanup(void* elem, TagOrCleanup cleanup) {
+  SerialArena* arena;
+  if (PROTOBUF_PREDICT_FALSE(!GetSerialArenaFast(&arena))) {
+    arena = GetSerialArenaFallback(kMaxCleanupNodeSize);
+  }
+  arena->AddCleanup(elem, cleanup);
+}
 
 }  // namespace internal
 }  // namespace protobuf
